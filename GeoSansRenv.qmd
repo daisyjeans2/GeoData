@@ -1,0 +1,1039 @@
+---
+title: "GeoSansRenv"
+format: html
+editor: visual
+fig-width: 10
+fig-height: 5
+---
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+#| label: libraries
+
+#PRE-QUESTION ONE:
+
+#download the necessary libraries
+
+library(here) 
+library(dismo) 
+library(rworldmap) 
+library(sf) 
+library(geodata) 
+library(car) 
+library(caret)
+```
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+#| results: "hide"
+#| include: false
+#| label: organisation
+sapply(c("data/raw", "data/processed", "output"), function(dir) {
+  dir_path <- here(dir)
+  if (!dir.exists(dir_path)) {
+    dir.create(dir_path, recursive = TRUE)
+  }
+})
+```
+
+## Geo-data and Methods in R:
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+#| label: simpleworldmap
+#| fig-cap: Simple World Map
+
+#generating and plotting a simple map of the world using R
+wrld_simpl <- getMap(resolution = "coarse") 
+```
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+#| label: oceandata
+
+#loading in some ocean and bioclimatic data that we will use to trim, and organise our scope of research (respectively)
+
+#firstly, creating an "ocean" subfolder in the "data folder:
+
+ocean_data_dir <- here("data", "raw", "ocean") 
+if (!dir.exists(ocean_data_dir)) dir.create(ocean_data_dir)  
+
+#next, loading in the data 
+
+ocean_URL <- "https://naturalearth.s3.amazonaws.com/110m_physical/ne_110m_ocean.zip" 
+ocean_zip_file <- file.path(ocean_data_dir, basename(ocean_URL)) 
+if (!file.exists(ocean_zip_file)) { 
+    download.file(ocean_URL, ocean_zip_file) 
+}
+
+#unzipping the file 
+ocean_files <- unzip(ocean_zip_file, exdir = ocean_data_dir) 
+
+#assigning the data 
+oceans_final <- read_sf(grep("shp$", ocean_files, value = TRUE))
+```
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+#| label: trimfunctionsetup
+
+#creating a trim function so we are only looking at the relevant lat and longs
+
+trim.coords <- function(x, latmin, latmax, lonmin, lonmax) {
+    x[x$lon >= lonmin & x$lon <= lonmax & x$lat >= latmin & x$lat <= latmax, ]
+}
+```
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+#| label: bioclimaticdata
+#loading in the biodclimatic data
+
+bio.data <- worldclim_global(var = "bio", res = 10, path = here("data", "raw"))
+names(bio.data) <- paste0("bio", 1:19)
+```
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+#| label: futuredata
+
+future.bio.data <- cmip6_world(
+    model = "CanESM5",
+    var = "bio", 
+    ssp = "245",
+    res = 10,
+    time = "2061-2080",
+    path = here("data", "raw")
+)
+names(future.bio.data) <- names(bio.data) #assigning names across for continuity 
+```
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+#| label: changedata
+
+# SUPPLEMENTARY, loading in and assigning change of bio data by substracting existing data from the future data to generate change 
+
+change.bio.data <- future.bio.data - bio.data
+```
+
+### **1: Species 1 Distribution Modelling**
+
+#### The task: run linear models to predict the present day distribution of species 1.
+
+Here, my chosen species 1 is: *Myzus persicae*, the green peach aphid.
+
+![Myzus persicae, the green peach aphid.](images/Myzus%20persicae%20-01.jpg){fig-alt="An image of Myzus persicae, the green peach aphid"}
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+#| label: sp1data
+
+#firstly, we have to load the data in
+
+#assigning species 1 data so we don't lose it, for reproducibility 
+
+sp1_gbif_file <- here("data", "raw", "sp1.gbif.rds") 
+
+#putting the file in the folder (if loading for the first time), and if rerunning the code, then just reading it. This is good for reproducibility as it decreases the chances that R will break
+
+if (!file.exists(sp1_gbif_file)) {
+  sp1_gbif <- gbif("myzus", "persicae", geo = TRUE)
+  saveRDS(sp1_gbif, sp1_gbif_file)
+} else {
+  sp1_gbif <- readRDS(sp1_gbif_file)
+}
+
+#NB: I use general coding titles (e.g. sp1) rather than specific coding titles (such as M.persicae). This is good for reproducibility since different datasets can be loaded in, but still understood with ease. 
+
+#next, we have to draw out the latitude and longitude variables from the dataset; as it has many variables. 
+
+sp1.coords <- cbind(sp1_gbif$lon, sp1_gbif$lat) 
+
+sp1.coords <- na.omit(sp1.coords) #removing any NA values 
+sp1.coords <- data.frame(sp1.coords) #turning this into a dataframe
+colnames(sp1.coords) <- c("lon", "lat") #assigning appopriate column names
+```
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+#| label: trimfunction
+
+#creating a trim function so we are only looking at the relevant lat and longs
+
+trim.coords <- function(x, latmin, latmax, lonmin, lonmax) {
+    x[x$lon >= lonmin & x$lon <= lonmax & x$lat >= latmin & x$lat <= latmax, ]
+}
+
+#my relevant lat and longs are in Europe
+
+sp1.coords.trim <- trim.coords(sp1.coords, latmin = 30, latmax = 70, lonmin = 0, lonmax = 50)
+sp1.coords <- sp1.coords.trim #assign these
+```
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+#| label: integratingoceandata
+
+#now to get rid of the ocean data that we loaded in PRE-QUESTION ONE:
+
+#firstly, we must put the co-ordinates in the right formats to merge the data
+
+sp1.coords <- st_as_sf(sp1.coords, coords = c("lon", "lat")) 
+st_crs(sp1.coords) <- st_crs(oceans_final) 
+sf_use_s2(FALSE) # Disable spherical geometry
+
+tmp1 <- sapply(st_intersects(sp1.coords, oceans_final), function(z) if (length(z) == 0) NA_integer_ else z[1])
+
+if (sum(!is.na(tmp1)) > 0) {
+  sp1.coords <- data.frame(st_coordinates(sp1.coords[!is.na(tmp1), ]))
+} else {
+  sp1.coords <- data.frame(st_coordinates(sp1.coords))
+}
+
+colnames(sp1.coords) <- c("lon", "lat")
+```
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+#| label: biodata1
+
+##now we turn to the bioclimatic data
+
+bio1.values <- extract(bio.data, sp1.coords)[, -1]  # Looking at the relevant data
+rownames(bio1.values) <- rownames(sp1.coords)
+
+# Append to lat long, remove rows with missing data, and save to file for future use
+sp1.data <- cbind(sp1.coords, bio1.values)
+sp1.data <- na.omit(sp1.data)
+write.csv(sp1.data, file = here("data", "processed", "sp1_data.csv"), row.names = FALSE)
+```
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+#| label: buildingthemodel
+
+#now we need to generate a linear regression model
+
+# Define study extent based on species occurrence data (with some buffer around it)
+
+e1 <- extent(
+    min(sp1.coords$lon) - 5,
+    max(sp1.coords$lon) + 5,
+    min(sp1.coords$lat) - 5,
+    max(sp1.coords$lat) + 5
+)
+
+# Rasterising the map for our extent 
+
+mask1 <- rasterize(wrld_simpl, raster(e1, res=0.5))
+
+# Generate 500 random background points within the study region
+
+bg1 <- randomPoints(mask1, 500, ext=e1) 
+colnames(bg1) <- c("lon", "lat") #assign appropriate column names 
+```
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+#| label: trainingthemodel
+
+bio1.data <- crop(bio.data, e1) #cropping to this extent 
+
+train1 <- rbind(sp1.coords, bg1) # Combining the actual data and the modelled data into one dataframe 
+
+pb_train1 <- c(rep(1, nrow(sp1.coords)), rep(0, nrow(bg1))) #assigning 1s (actual data) and Os (modelled data)
+
+envtrain1 <- extract(bio1.data, train1) #for every bit of the combined dataset, we need the bioclimatic data 
+
+envtrain1 <- data.frame(cbind(pa = pb_train1, envtrain1)) #put this into a new dataframe
+
+testpres <- data.frame(extract(bio1.data, sp1.coords)) #a dataframe for just the actual data 
+testbackg <- data.frame(extract(bio1.data, bg1)) #a dataframe for just the modelled data
+```
+
+#### [*Which set of climatic variables best explains the current distribution of the species?*]{.underline}
+
+In order to run linear models to predict the present-day distribution of *M. persica*e, I had to first understand which climate variables woulbe be important in predicting this distribution. In order to analyse this \[...\].  
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+#| results: "hide"
+#| include: false
+#| label: testingmodels
+
+#testing which variables are most important to the model 
+
+#firstly, we can generate a full model including all of the variables. 
+
+full_model_1 <- glm(pa ~ bio1 + bio2 + bio3 + bio4 + bio5 + bio6 + bio7 + bio8 + bio9 + bio10 + bio11 + bio12 + bio13 + bio14 + bio15 + bio16 + bio17 + bio18 + bio19,
+    family = binomial(link = "logit"), data = envtrain1
+)
+
+vif(full_model_1)
+
+reduced_model_1.0 <- glm(pa ~ bio1 + bio2 + bio3 + bio4 + bio6 + bio7 + bio8 + bio9 + bio10 + bio11 + bio12 + bio13 + bio14 + bio15 + bio16 + bio17 + bio18 + bio19,
+    family = binomial(link = "logit"), data = envtrain1
+)
+
+AIC(full_model_1, reduced_model_1.0)
+vif(reduced_model_1.0)
+
+reduced_model_1.1 <- glm(pa ~ bio1 + bio2 + bio3 + bio4 + bio6 + bio7 + bio8 + bio9 + bio10 + bio12 + bio13 + bio14 + bio15 + bio16 + bio17 + bio18 + bio19,
+    family = binomial(link = "logit"), data = envtrain1
+)
+
+AIC(full_model_1, reduced_model_1.0, reduced_model_1.1)
+vif(reduced_model_1.1)
+
+reduced_model_1.2 <- glm(pa ~ bio2 + bio3 + bio4 + bio6 + bio7 + bio8 + bio9 + bio10 + bio12 + bio13 + bio14 + bio15 + bio16 + bio17 + bio18 + bio19,
+    family = binomial(link = "logit"), data = envtrain1
+)
+
+AIC(full_model_1, reduced_model_1.0, reduced_model_1.1, reduced_model_1.2)
+vif(reduced_model_1.2)
+
+reduced_model_1.3 <- glm(pa ~ bio2 + bio3 + bio4 + bio6 + bio7 + bio8 + bio9 + bio10 + bio13 + bio14 + bio15 + bio16 + bio17 + bio18 + bio19,
+    family = binomial(link = "logit"), data = envtrain1
+)
+
+AIC(full_model_1, reduced_model_1.0, reduced_model_1.1, reduced_model_1.2, reduced_model_1.3)
+vif(reduced_model_1.3)
+
+reduced_model_1.4 <- glm(pa ~ bio2 + bio3 + bio4 + bio6 + bio7 + bio8 + bio9 + bio10 + bio14 + bio15 + bio16 + bio17 + bio18 + bio19,
+    family = binomial(link = "logit"), data = envtrain1
+)
+
+AIC(full_model_1, reduced_model_1.0, reduced_model_1.1, reduced_model_1.2, reduced_model_1.3, reduced_model_1.4)
+vif(reduced_model_1.4)
+
+reduced_model_1.5 <- glm(pa ~ bio2 + bio3 + bio4 + bio6 + bio7 + bio8 + bio9 + bio10 + bio14 + bio15 + bio16 + bio18 + bio19,
+    family = binomial(link = "logit"), data = envtrain1
+)
+
+AIC(full_model_1, reduced_model_1.0, reduced_model_1.1, reduced_model_1.2, reduced_model_1.3, reduced_model_1.4, reduced_model_1.5)
+vif(reduced_model_1.5)
+
+reduced_model_1.6 <- glm(pa ~ bio3 + bio4 + bio6 + bio7 + bio8 + bio9 + bio10 + bio14 + bio15 + bio16 + bio18 + bio19,
+    family = binomial(link = "logit"), data = envtrain1
+)
+
+AIC(full_model_1, reduced_model_1.0, reduced_model_1.1, reduced_model_1.2, reduced_model_1.3, reduced_model_1.4, reduced_model_1.5, reduced_model_1.6)
+vif(reduced_model_1.6)
+
+reduced_model_1.7 <- glm(pa ~ bio3 + bio6 + bio7 + bio8 + bio9 + bio10 + bio14 + bio15 + bio16 + bio18 + bio19,
+    family = binomial(link = "logit"), data = envtrain1
+)
+
+AIC(full_model_1, reduced_model_1.0, reduced_model_1.1, reduced_model_1.2, reduced_model_1.3, reduced_model_1.4, reduced_model_1.5, reduced_model_1.6, reduced_model_1.7)
+vif(reduced_model_1.7)
+
+reduced_model_1.8 <- glm(pa ~ bio3 + bio6 + bio7 + bio8 + bio9 + bio10 + bio14 + bio15 + bio16 + bio19,
+    family = binomial(link = "logit"), data = envtrain1
+)
+
+AIC(full_model_1, reduced_model_1.0, reduced_model_1.1, reduced_model_1.2, reduced_model_1.3, reduced_model_1.4, reduced_model_1.5, reduced_model_1.6, reduced_model_1.7, reduced_model_1.8)
+vif(reduced_model_1.8)
+
+reduced_model_1.9 <- glm(pa ~ bio3 + bio6 + bio7 + bio8 + bio10 + bio14 + bio15 + bio16 + bio19,
+    family = binomial(link = "logit"), data = envtrain1
+)
+
+AIC(full_model_1, reduced_model_1.0, reduced_model_1.1, reduced_model_1.2, reduced_model_1.3, reduced_model_1.4, reduced_model_1.5, reduced_model_1.6, reduced_model_1.7, reduced_model_1.8, reduced_model_1.9)
+vif(reduced_model_1.9)
+
+reduced_model_1.10 <- glm(pa ~ bio6 + bio7 + bio8 + bio10 + bio14 + bio15 + bio16 + bio19,
+    family = binomial(link = "logit"), data = envtrain1
+)
+
+AIC(full_model_1, reduced_model_1.0, reduced_model_1.1, reduced_model_1.2, reduced_model_1.3, reduced_model_1.4, reduced_model_1.5, reduced_model_1.6, reduced_model_1.7, reduced_model_1.8, reduced_model_1.9, reduced_model_1.10)
+vif(reduced_model_1.10)
+
+evaluate(testpres, testbackg, full_model_1)
+evaluate(testpres, testbackg, reduced_model_1.10)
+```
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+#| label: predictions
+
+#finally, let's plot our data
+                  
+pg1 <- predict(bio1.data, reduced_model_1.10, ext = e1, type = "response")
+pg1 <- crop(pg1, e1)
+```
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+#| label: thresholds
+
+ge1 <- evaluate(testpres, testbackg, reduced_model_1.10)
+tr1 <- threshold(ge1, "prevalence")
+```
+
+#### [*Presenting a map of its current distribution:*]{.underline}
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+#| label: plottingP/Asp1
+
+plot(pg1 > tr1, main = "presence/absence")
+plot(wrld_simpl, add = TRUE, border = "dark grey")
+points(sp1.coords, col="red", pch=20, cex=1.5)
+```
+
+My map of the current M. persicae distribution shows that \[...\].  
+
+As such, the set of climatic variables which best explain the current distribution of M. persicae are \[... see supplementary\]. Perhaps this could be explained by \[cite + bibliography\], though this would require \[...\].  
+
+### **2: Species 2 Distribution Modelling**
+
+#### The task: run linear models to predict the present day distribution of species 2.
+
+Here, my chosen species 2 is: *Prunus persica*, the peach tree.
+
+![Prunus persica, the peach tree.](images/Prunus%20persica-01.jpg){fig-alt="An image of prunus persica, the peach tree."}
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+#| label: sp2load
+
+#NB for ease of reading I will not include recapitulated annotations for this repeated protocol. For detailed annotations on each line of code, please see the above example. 
+
+sp2_gbif_file <- here("data", "raw", "sp2.gbif.rds")
+
+if (!file.exists(sp2_gbif_file)) {
+  sp2_gbif <- gbif("prunus", "persica", geo = TRUE)
+  saveRDS(sp2_gbif, sp2_gbif_file)
+} else {
+  sp2_gbif <- readRDS(sp2_gbif_file)
+}
+
+sp2.coords <- cbind(sp2_gbif$lon, sp2_gbif$lat) 
+sp2.coords <- na.omit(sp2.coords)  
+sp2.coords <- data.frame(sp2.coords) 
+colnames(sp2.coords) <- c("lon", "lat") 
+```
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+#| label: sp2trim
+
+#here we are applying the pre-existing trim function to the peach tree data
+
+sp2.coords.trim <- trim.coords(sp2.coords, latmin = 30, latmax = 70, lonmin = 0, lonmax = 50)
+sp2.coords <- sp2.coords.trim 
+```
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+#| label: sp2oceantrim
+
+sp2.coords <- st_as_sf(sp2.coords, coords = c("lon", "lat")) 
+st_crs(sp2.coords) <- st_crs(oceans_final) 
+sf_use_s2(FALSE) 
+
+tmp2 <- sapply(st_intersects(sp2.coords, oceans_final), function(z) if (length(z) == 0) NA_integer_ else z[1])
+
+if (sum(!is.na(tmp2)) > 0) {
+  sp2.coords <- data.frame(st_coordinates(sp2.coords[!is.na(tmp2), ]))
+} else {
+  sp2.coords <- data.frame(st_coordinates(sp2.coords))
+}
+
+colnames(sp2.coords) <- c("lon", "lat")
+```
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+#| label: sp2biodata
+
+##now we turn to the bioclimatic data
+
+bio2.values <- extract(bio.data, sp2.coords)[, -1]  # Looking at the relevant data
+rownames(bio2.values) <- rownames(sp2.coords)
+
+# Append to lat long, remove rows with missing data, and save to file for future use
+sp2.data <- cbind(sp2.coords, bio2.values)
+sp2.data <- na.omit(sp2.data)
+write.csv(sp2.data, file = here("data", "processed", "sp2_data.csv"), row.names = FALSE)
+```
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+#| label: sp2modelbuild
+
+e2 <- extent(
+    min(sp2.coords$lon) - 5,
+    max(sp2.coords$lon) + 5,
+    min(sp2.coords$lat) - 5,
+    max(sp2.coords$lat) + 5
+)
+
+mask2 <- rasterize(wrld_simpl, raster(e2, res=0.5))
+
+bg2 <- randomPoints(mask2, 500, ext=e2) 
+colnames(bg2) <- c("lon", "lat") 
+```
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+#| label: sp2modeltrain
+
+bio2.data <- crop(bio.data, e2) 
+
+train2 <- rbind(sp2.coords, bg2) 
+
+pb_train2 <- c(rep(1, nrow(sp2.coords)), rep(0, nrow(bg2))) 
+
+envtrain2 <- extract(bio2.data, train2) 
+
+envtrain2 <- data.frame(cbind(pa = pb_train2, envtrain2)) 
+
+testpres2 <- data.frame(extract(bio2.data, sp2.coords)) 
+testbackg2 <- data.frame(extract(bio2.data, bg2)) 
+```
+
+Once again, in order to run linear models to predict the present-day distribution of P. persica, I had to first understand which climate variables would be be important in predicting its distribution. In order to analyse this \[...\].  
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+#| results: "hide"
+#| include: false
+#| label: sp2modeltest
+
+#testing which model best fits 
+
+full_model_2 <- glm(pa ~ bio1 + bio2 + bio3 + bio4 + bio5 + bio6 + bio7 + bio8 + bio9 + bio10 + bio11 + bio12 + bio13 + bio14 + bio15 + bio16 + bio17 + bio18 + bio19,
+                    family = binomial(link = "logit"), data = envtrain2
+)
+
+vif(full_model_2)
+
+reduced_model_2.0 <- glm(pa ~ bio1 + bio2 + bio3 + bio4 + bio6 + bio7 + bio8 + bio9 + bio10 + bio11 + bio12 + bio13 + bio14 + bio15 + bio16 + bio17 + bio18 + bio19,
+                         family = binomial(link = "logit"), data = envtrain2
+)
+
+AIC(full_model_2, reduced_model_2.0)
+vif(reduced_model_2.0)
+
+reduced_model_2.1 <- glm(pa ~ bio1 + bio2 + bio3 + bio6 + bio7 + bio8 + bio9 + bio10 + bio11 + bio12 + bio13 + bio14 + bio15 + bio16 + bio17 + bio18 + bio19,
+                         family = binomial(link = "logit"), data = envtrain2
+)
+
+AIC(full_model_2, reduced_model_2.0, reduced_model_2.1)
+vif(reduced_model_2.1)
+
+reduced_model_2.2 <- glm(pa ~ bio1 + bio2 + bio3 + bio7 + bio8 + bio9 + bio10 + bio11 + bio12 + bio13 + bio14 + bio15 + bio16 + bio17 + bio18 + bio19,
+                         family = binomial(link = "logit"), data = envtrain2
+)
+
+AIC(full_model_2, reduced_model_2.0, reduced_model_2.1, reduced_model_2.2)
+vif(reduced_model_2.2)
+
+reduced_model_2.3 <- glm(pa ~ bio1 + bio3 + bio7 + bio8 + bio9 + bio10 + bio11 + bio12 + bio13 + bio14 + bio15 + bio16 + bio17 + bio18 + bio19,
+                         family = binomial(link = "logit"), data = envtrain2
+)
+
+AIC(full_model_2, reduced_model_2.0, reduced_model_2.1, reduced_model_2.2, reduced_model_2.3)
+vif(reduced_model_2.3)
+
+reduced_model_2.4 <- glm(pa ~ bio1 + bio3 + bio7 + bio8 + bio9 + bio10 + bio11 + bio12 + bio13 + bio14 + bio15 + bio17 + bio18 + bio19,
+                         family = binomial(link = "logit"), data = envtrain2
+)
+
+AIC(full_model_2, reduced_model_2.0, reduced_model_2.1, reduced_model_2.2, reduced_model_2.3, reduced_model_2.4)
+vif(reduced_model_2.4)
+
+
+reduced_model_2.5 <- glm(pa ~ bio1 + bio3 + bio7 + bio8 + bio9 + bio10 + bio11 + bio12 + bio13 + bio15 + bio17 + bio18 + bio19,
+                         family = binomial(link = "logit"), data = envtrain2
+)
+
+AIC(full_model_2, reduced_model_2.0, reduced_model_2.1, reduced_model_2.2, reduced_model_2.3, reduced_model_2.4, reduced_model_2.5)
+vif(reduced_model_2.5)
+
+reduced_model_2.6 <- glm(pa ~ bio1 + bio3 + bio7 + bio8 + bio9 + bio10 + bio11 + bio12 + bio13 + bio15 + bio17 + bio18,
+                         family = binomial(link = "logit"), data = envtrain2
+)
+
+AIC(full_model_2, reduced_model_2.0, reduced_model_2.1, reduced_model_2.2, reduced_model_2.3, reduced_model_2.4, reduced_model_2.5, reduced_model_2.6)
+vif(reduced_model_2.6)
+
+reduced_model_2.7 <- glm(pa ~ bio1 + bio3 + bio7 + bio8 + bio9 + bio10 + bio11 + bio12 + bio13 + bio15 + bio17,
+                         family = binomial(link = "logit"), data = envtrain2
+)
+
+AIC(full_model_2, reduced_model_2.0, reduced_model_2.1, reduced_model_2.2, reduced_model_2.3, reduced_model_2.4, reduced_model_2.5, reduced_model_2.6, reduced_model_2.7)
+vif(reduced_model_2.7)
+
+reduced_model_2.8 <- glm(pa ~ bio1 + bio3 + bio7 + bio8 + bio9 + bio10 + bio11 + bio12 + bio13 + bio15 + bio17,
+                         family = binomial(link = "logit"), data = envtrain2
+)
+
+AIC(full_model_2, reduced_model_2.0, reduced_model_2.1, reduced_model_2.2, reduced_model_2.3, reduced_model_2.4, reduced_model_2.5, reduced_model_2.6, reduced_model_2.7, reduced_model_2.8)
+vif(reduced_model_2.8)
+
+evaluate(testpres, testbackg, full_model_2)
+evaluate(testpres, testbackg, reduced_model_2.8)
+```
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+#| label: sp2predict
+
+#finally, let's plot our data
+                  
+pg2 <- predict(bio2.data, reduced_model_2.8, ext = e2, type = "response")
+pg2 <- crop(pg2, e2)
+```
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+#| label: sp2threshold
+
+ge2 <- evaluate(testpres, testbackg, reduced_model_2.8)
+tr2 <- threshold(ge2, "prevalence")
+```
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+#| label: sp2plot
+
+plot(pg2 > tr2, main = "presence/absence")
+plot(wrld_simpl, add = TRUE, border = "dark grey")
+points(sp2.coords, col="red", pch=20, cex=1.5)
+```
+
+My map of the current M. persicae distribution shows that \[...\].  
+
+As such, the set of climatic variables which best explain the current distribution of M. persicae are \[... see supplementary\]. Perhaps this could be explained by \[cite + bibliography\], though this would require \[...\].  
+
+### **3: Distribution Overlap**
+
+#### The task: plot the overlap in distribution of the two species. Devise and calculate a metric for the degree of overlap between their ranges, explaining how you calculated it.
+
+#### [*Plot the overlap in distribution of the two species.*]{.underline}
+
+In order to plot the overlap in distribution between M. persicae and P. persica, I first needed to \[...\]. 
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+#| label: definingoverlap
+
+buffer_distance <- 80000
+exp_sp1 <- buffer(pg1 > tr1, width = buffer_distance)
+exp_sp2 <- buffer(pg2 > tr2, width = buffer_distance)
+
+extent_sp1 <- ext(exp_sp1)
+extent_sp2 <- ext(exp_sp2)
+
+combined_extent <- ext(min(xmin(extent_sp1), xmin(extent_sp2)),
+                       max(xmax(extent_sp1), xmax(extent_sp2)),
+                       min(ymin(extent_sp1), ymin(extent_sp2)),
+                       max(ymax(extent_sp1), ymax(extent_sp2)))
+                       
+exp_sp1_extended <- extend(exp_sp1, combined_extent)
+exp_sp2_extended <- extend(exp_sp2, combined_extent)
+
+exp_sp2_resampled <- resample(exp_sp2_extended, exp_sp1_extended, method = "bilinear")
+```
+
+::: callout-tip
+## An individual M. persicae can disperse up to 80km!
+:::
+
+#### [*Devise and calculate a metric for the degree of overlap between their ranges, explaining how you calculated it.*]{.underline}
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+#| label: metriccalc
+
+overlap_area <- exp_sp1_extended * exp_sp2_resampled
+overlap_area_sum <- sum(values(overlap_area), na.rm = TRUE)
+```
+
+In order to devise and calculate a metric for the degree of overlap between the ranges of M. persicae and P. persica, I decided to \[...\].  
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+#| label: plottingoverlap
+
+plot(overlap_area, main = "Overlap Area", col = c("transparent", "green"), legend = FALSE)
+plot(wrld_simpl, add = TRUE, border = "dark grey")
+points(sp1.coords, col = "red", pch = 20, cex = 1.5)  # Points for Species 1
+points(sp2.coords, col = "blue", pch = 20, cex = 1.5)  # Points for Species 2
+
+print(paste("Total overlap area (sum of raster cells):", overlap_area_sum))
+```
+
+Ultimately, my map of the overlapping distributions of M. persicae and P. persica shows that \[...\].  
+
+### **4: Interspecies Distribution Dependence**
+
+#### The task: use a linear model to test whether the distribution of species 1 at the present time depends on the distribution of species 2, while also taking account of the effects of climatic variables.
+
+In order to generate a linear model that could test whether the distribution of M. persicae at the present time depends on the distribution of P. persica, I first had to \[...\].
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+#| label: generatingdualmodel
+
+pg1_values <- values(pg1)
+pg2_values <- values(pg2)
+
+pg2_extended <- extend(pg2, ext(pg1))
+pg2_resampled <- resample(pg2_extended, pg1, method = "bilinear")
+
+pg1_values <- values(pg1)
+pg2_values <- values(pg2_resampled)
+
+# Combine them into a data frame
+present_overlap_model_data <- data.frame(pg1 = pg1_values, pg2 = pg2_values)
+present_overlap_model_data <- na.omit(present_overlap_model_data)
+
+present_overlap_model <- lm(pg2_values ~ pg1_values, data = present_overlap_model_data)
+```
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+#| label: summarising dual model
+
+summary(present_overlap_model)
+```
+
+Ultimately, this summary of my model shows that \[...\].
+
+### **5: Future Distribution Prediction**
+
+#### The task: predict the future distribution of each species using CMIP6 data for future climate and predict how the degree of overlap in ranges change will change in that time. Do you expect the two species to co-occur more often or less often than at the present?
+
+#### [*Predict the future distribution of each species using CMIP6 data for future climate:*]{.underline}
+
+In order to predict the future distribution of each species using the CMIp6 data for future climate, I first had to \[...\].
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+#| label: settingupfuture
+
+# Crop future climate data to region of interest for efficiency
+future.bio1.data <- crop(future.bio.data, e1)
+
+pg1.future <- predict(future.bio1.data, reduced_model_1.10, ext = e1, type = "response")
+pg1.future <- crop(pg1.future, e1)
+```
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+#| label: sp1PvF
+
+# Plot results side by side
+par(mfrow = c(1, 2))
+
+# Present distribution
+plot(pg1, main = "A) GLM present")
+plot(wrld_simpl, add = TRUE, border = "dark grey")
+points(sp1.coords, col = "black", pch = 4, cex = 0.5)
+
+# Future distribution
+plot(pg1.future, main = "B) GLM, 2060-2081")
+plot(wrld_simpl, add = TRUE, border = "dark grey")
+points(sp1.coords, col = "black", pch = 4, cex = 0.5)
+```
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+#| label: sp1localities
+
+# First, get predictions for present and future at all localities
+predict.localities1.now <- extract(pg1 >= tr1, sp1.coords)[, -1]
+predict.localities1.future <- extract(pg1.future >= tr1, sp1.coords)[, -1]
+
+# We can extract some numbers about how the range will change, for example:
+present_range_1 <- sum(predict.localities1.now)
+future_range_1 <- sum(predict.localities1.future, na.rm = TRUE)
+range_expansion_1 <- sum((predict.localities1.now == 0) & (predict.localities1.future == 1), na.rm = TRUE)
+range_contraction_1 <- sum((predict.localities1.now == 1) & (predict.localities1.future == 0), na.rm = TRUE)
+```
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+#| label: printingsp1localities
+
+# Print results in a clear format
+print("Range change metrics:")
+print(paste("Current suitable localities:", present_range_1))
+print(paste("Future suitable localities:", future_range_1))
+print(paste("Number of new suitable localities (expansion):", range_expansion_1))
+print(paste("Number of lost suitable localities (contraction):", range_contraction_1))
+```
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+#| label: sp2future
+
+#for sp2
+
+future.bio2.data <- crop(future.bio.data, e2)
+
+pg2.future <- predict(future.bio2.data, reduced_model_2.8, ext = e2, type = "response")
+pg2.future <- crop(pg2.future, e2)
+```
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+#| label: plottingsp2PvF
+
+# Plot results side by side
+par(mfrow = c(1, 2))
+
+# Present distribution
+plot(pg2, main = "A) GLM present")
+plot(wrld_simpl, add = TRUE, border = "dark grey")
+points(sp2.coords, col = "black", pch = 4, cex = 0.5)
+
+# Future distribution
+plot(pg2.future, main = "B) GLM, 2060-2081")
+plot(wrld_simpl, add = TRUE, border = "dark grey")
+points(sp2.coords, col = "black", pch = 4, cex = 0.5)
+```
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+#| label: sp2localities
+
+# First, get predictions for present and future at all localities
+predict.localities2.now <- extract(pg2 >= tr2, sp2.coords)[, -1]
+predict.localities2.future <- extract(pg2.future >= tr1, sp2.coords)[, -1]
+
+# We can extract some numbers about how the range will change, for example:
+present_range_2 <- sum(predict.localities2.now)
+future_range_2 <- sum(predict.localities2.future, na.rm = TRUE)
+range_expansion_2 <- sum((predict.localities2.now == 0) & (predict.localities2.future == 1), na.rm = TRUE)
+range_contraction_2 <- sum((predict.localities2.now == 1) & (predict.localities2.future == 0), na.rm = TRUE)
+
+```
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+#| label: printsp2localities
+
+# Print results in a clear format
+print("Range change metrics:")
+print(paste("Current suitable localities:", present_range_2))
+print(paste("Future suitable localities:", future_range_2))
+print(paste("Number of new suitable localities (expansion):", range_expansion_2))
+print(paste("Number of lost suitable localities (contraction):", range_contraction_2))
+```
+
+#### [*Predict how the degree of overlap in ranges change:*]{.underline}
+
+In order to predict how the degree of overlap in the ranges of M. persicae and P. persica would change in this time, I had to \[...\].
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+#| label: futureoverlap
+
+future_exp_sp1 <- buffer(pg1.future > tr1, width = buffer_distance)
+future_exp_sp2 <- buffer(pg2.future > tr2, width = buffer_distance)
+
+future_extent_sp1 <- ext(future_exp_sp1)
+future_extent_sp2 <- ext(future_exp_sp2)
+
+combined_future_extent <- ext(min(xmin(future_extent_sp1), xmin(future_extent_sp2)),
+                       max(xmax(future_extent_sp1), xmax(future_extent_sp2)),
+                       min(ymin(future_extent_sp1), ymin(future_extent_sp2)),
+                       max(ymax(future_extent_sp1), ymax(future_extent_sp2)))
+                       
+future_exp_sp1_extended <- extend(future_exp_sp1, combined_extent)
+future_exp_sp2_extended <- extend(future_exp_sp2, combined_extent)
+
+future_exp_sp2_resampled <- resample(future_exp_sp2_extended, future_exp_sp1_extended, method = "bilinear")
+
+future_overlap_area <- future_exp_sp1_extended * future_exp_sp2_resampled
+
+future_overlap_area_sum <- sum(values(future_overlap_area), na.rm = TRUE)
+```
+
+#### [*Do you expect the two species to co-occur more often or less often than at the present?*]{.underline}
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+#| label: printingfutureoverlap
+
+print(paste("Total overlap area (sum of raster cells):", future_overlap_area_sum))
+```
+
+Ultimately, my calculation for the overlapping area sum in the future shows that \[...\].
+
+## SUPPLEMENTARY.
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+#| label: changedataofinterest
+
+# SUPPLEMENTARY
+# plot present, future and change in climate for bioclim 1 variable, mean annual temperature.
+par(mfrow = c(1, 3))
+plot(bio.data[[7]], ext = e1, main = "Present Day")
+plot(future.bio.data[[7]], ext = e1, main = "2061-2080")
+plot(change.bio.data[[7]], ext = e1, main = "Projected Change") 
+
+par(mfrow = c(1, 3))
+plot(bio.data[[10]], ext = e1, main = "Present Day")
+plot(future.bio.data[[10]], ext = e1, main = "2061-2080")
+plot(change.bio.data[[10]], ext = e1, main = "Projected Change") 
+
+par(mfrow = c(1, 3))
+plot(bio.data[[6]], ext = e1, main = "Present Day")
+plot(future.bio.data[[6]], ext = e1, main = "2061-2080")
+plot(change.bio.data[[6]], ext = e1, main = "Projected Change") 
+
+par(mfrow = c(1, 3))
+plot(bio.data[[14]], ext = e1, main = "Present Day")
+plot(future.bio.data[[14]], ext = e1, main = "2061-2080")
+plot(change.bio.data[[14]], ext = e1, main = "Projected Change") 
+
+par(mfrow = c(1, 3))
+plot(bio.data[[15]], ext = e1, main = "Present Day")
+plot(future.bio.data[[15]], ext = e1, main = "2061-2080")
+plot(change.bio.data[[15]], ext = e1, main = "Projected Change") 
+
+par(mfrow = c(1, 3))
+plot(bio.data[[16]], ext = e1, main = "Present Day")
+plot(future.bio.data[[16]], ext = e1, main = "2061-2080")
+plot(change.bio.data[[16]], ext = e1, main = "Projected Change") 
+
+par(mfrow = c(1, 3))
+plot(bio.data[[19]], ext = e1, main = "Present Day")
+plot(future.bio.data[[19]], ext = e1, main = "2061-2080")
+plot(change.bio.data[[19]], ext = e1, main = "Projected Change") 
+
+par(mfrow = c(1, 3))
+plot(bio.data[[19]], ext = e1, main = "Present Day")
+plot(future.bio.data[[19]], ext = e1, main = "2061-2080")
+plot(change.bio.data[[19]], ext = e1, main = "Projected Change") 
+
+par(mfrow = c(1, 3))
+plot(bio.data[[1]], ext = e1, main = "Present Day")
+plot(future.bio.data[[1]], ext = e1, main = "2061-2080")
+plot(change.bio.data[[1]], ext = e1, main = "Projected Change") 
+
+par(mfrow = c(1, 3))
+plot(bio.data[[3]], ext = e1, main = "Present Day")
+plot(future.bio.data[[3]], ext = e1, main = "2061-2080")
+plot(change.bio.data[[3]], ext = e1, main = "Projected Change") 
+
+par(mfrow = c(1, 3))
+plot(bio.data[[9]], ext = e1, main = "Present Day")
+plot(future.bio.data[[9]], ext = e1, main = "2061-2080")
+plot(change.bio.data[[9]], ext = e1, main = "Projected Change") 
+
+par(mfrow = c(1, 3))
+plot(bio.data[[11]], ext = e1, main = "Present Day")
+plot(future.bio.data[[11]], ext = e1, main = "2061-2080")
+plot(change.bio.data[[11]], ext = e1, main = "Projected Change") 
+
+par(mfrow = c(1, 3))
+plot(bio.data[[12]], ext = e1, main = "Present Day")
+plot(future.bio.data[[12]], ext = e1, main = "2061-2080")
+plot(change.bio.data[[12]], ext = e1, main = "Projected Change") 
+
+par(mfrow = c(1, 3))
+plot(bio.data[[13]], ext = e1, main = "Present Day")
+plot(future.bio.data[[13]], ext = e1, main = "2061-2080")
+plot(change.bio.data[[13]], ext = e1, main = "Projected Change") 
+
+par(mfrow = c(1, 3))
+plot(bio.data[[17]], ext = e1, main = "Present Day")
+plot(future.bio.data[[17]], ext = e1, main = "2061-2080")
+plot(change.bio.data[[17]], ext = e1, main = "Projected Change") 
+```
