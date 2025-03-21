@@ -1,9 +1,11 @@
 ---
-title: "GeoSansRenv"
+title: "GeoFinal"
 format: html
 editor: visual
 fig-width: 10
 fig-height: 5
+self-contained: true
+bibliography: references.bib
 ---
 
 ```{r}
@@ -14,6 +16,8 @@ fig-height: 5
 
 #PRE-QUESTION ONE:
 
+#N.B. unfortunately I was unable to use a renv folder for this project, as it was incompatible with the "rworldmap" library. If this incompatibility could be solved, I would have used a renv folder for reproducibility. 
+
 #download the necessary libraries
 
 library(here) 
@@ -23,6 +27,12 @@ library(sf)
 library(geodata) 
 library(car) 
 library(caret)
+library(ragg)
+library(svglite)
+
+#I am also loading in a future function that will be used, and is saved in the "functions" subfolder of this Project, as well as on my GitHub
+
+source(here("functions", "trimming.coords.R"))
 ```
 
 ```{r}
@@ -32,12 +42,30 @@ library(caret)
 #| results: "hide"
 #| include: false
 #| label: organisation
+
+#organising  our subfolders for the data as raw, and processed; this is a reproducible method
+
 sapply(c("data/raw", "data/processed", "output"), function(dir) {
   dir_path <- here(dir)
   if (!dir.exists(dir_path)) {
     dir.create(dir_path, recursive = TRUE)
   }
 })
+```
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+#| label: trimfunctionsetup
+
+#creating a trim function so we are only looking at the relevant lat and longs
+#usually I would remove this, but if you do not have access to the Project or my GitHub, it is necessary here for proper running of the code 
+#NB: if applicable, this is also saved in the "functions" folder of my Project, and is available on my GitHub
+
+trim.coords <- function(x, latmin, latmax, lonmin, lonmax) {
+    x[x$lon >= lonmin & x$lon <= lonmax & x$lat >= latmin & x$lat <= latmax, ]
+}
 ```
 
 ## Geo-data and Methods in R:
@@ -47,7 +75,6 @@ sapply(c("data/raw", "data/processed", "output"), function(dir) {
 #| warning: false
 #| message: false
 #| label: simpleworldmap
-#| fig-cap: Simple World Map
 
 #generating and plotting a simple map of the world using R
 wrld_simpl <- getMap(resolution = "coarse") 
@@ -85,20 +112,8 @@ oceans_final <- read_sf(grep("shp$", ocean_files, value = TRUE))
 #| echo: false
 #| warning: false
 #| message: false
-#| label: trimfunctionsetup
-
-#creating a trim function so we are only looking at the relevant lat and longs
-
-trim.coords <- function(x, latmin, latmax, lonmin, lonmax) {
-    x[x$lon >= lonmin & x$lon <= lonmax & x$lat >= latmin & x$lat <= latmax, ]
-}
-```
-
-```{r}
-#| echo: false
-#| warning: false
-#| message: false
 #| label: bioclimaticdata
+
 #loading in the biodclimatic data
 
 bio.data <- worldclim_global(var = "bio", res = 10, path = here("data", "raw"))
@@ -110,6 +125,8 @@ names(bio.data) <- paste0("bio", 1:19)
 #| warning: false
 #| message: false
 #| label: futuredata
+
+#loading in the future bioclimatic variable data 
 
 future.bio.data <- cmip6_world(
     model = "CanESM5",
@@ -128,7 +145,7 @@ names(future.bio.data) <- names(bio.data) #assigning names across for continuity
 #| message: false
 #| label: changedata
 
-# SUPPLEMENTARY, loading in and assigning change of bio data by substracting existing data from the future data to generate change 
+# loading in and assigning change of bio data by substracting existing data from the future data to generate change. This will be used in my SUPPLEMENTARY MATERIALS. 
 
 change.bio.data <- future.bio.data - bio.data
 ```
@@ -139,7 +156,7 @@ change.bio.data <- future.bio.data - bio.data
 
 Here, my chosen species 1 is: *Myzus persicae*, the green peach aphid.
 
-![Myzus persicae, the green peach aphid.](images/Myzus%20persicae%20-01.jpg){fig-alt="An image of Myzus persicae, the green peach aphid"}
+![*Myzus persicae*, the green peach aphid.](images/Myzus%20persicae%20-01.jpg){fig-alt="An image of Myzus persicae, the green peach aphid"}
 
 ```{r}
 #| echo: false
@@ -179,12 +196,6 @@ colnames(sp1.coords) <- c("lon", "lat") #assigning appopriate column names
 #| message: false
 #| label: trimfunction
 
-#creating a trim function so we are only looking at the relevant lat and longs
-
-trim.coords <- function(x, latmin, latmax, lonmin, lonmax) {
-    x[x$lon >= lonmin & x$lon <= lonmax & x$lat >= latmin & x$lat <= latmax, ]
-}
-
 #my relevant lat and longs are in Europe
 
 sp1.coords.trim <- trim.coords(sp1.coords, latmin = 30, latmax = 70, lonmin = 0, lonmax = 50)
@@ -222,12 +233,13 @@ colnames(sp1.coords) <- c("lon", "lat")
 #| message: false
 #| label: biodata1
 
-##now we turn to the bioclimatic data
+##now we introduce the bioclimatic data
 
-bio1.values <- extract(bio.data, sp1.coords)[, -1]  # Looking at the relevant data
-rownames(bio1.values) <- rownames(sp1.coords)
+bio1.values <- extract(bio.data, sp1.coords)[, -1]  #extracting the data that is relevant to my species 1 
 
-# Append to lat long, remove rows with missing data, and save to file for future use
+rownames(bio1.values) <- rownames(sp1.coords) #keeping continuity of naming 
+
+# bind the data together, remove rows with missing data, and save to a "processed" file for future reproducible use
 sp1.data <- cbind(sp1.coords, bio1.values)
 sp1.data <- na.omit(sp1.data)
 write.csv(sp1.data, file = here("data", "processed", "sp1_data.csv"), row.names = FALSE)
@@ -282,7 +294,37 @@ testbackg <- data.frame(extract(bio1.data, bg1)) #a dataframe for just the model
 
 #### [*Which set of climatic variables best explains the current distribution of the species?*]{.underline}
 
-In order to run linear models to predict the present-day distribution of *M. persica*e, I had to first understand which climate variables woulbe be important in predicting this distribution. In order to analyse this \[...\].  
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+#| label: correlations
+#| fig-cap: "Fig1: Pairs of correlations between the BioClim data are difficult to interpret."
+
+#looking for correlations between variables 
+
+pairs(bio1.values[, 1:19])
+```
+
+Many of the bioclimatic variables are correlated (Fig1). This is logically acceptable, as they are mostly underpinned by temperature- and precipitation- based metrics [@clim]. The nature of their correlations was difficult to divine from the traditional plot, so I determined to derive a more contrived method, explained in my annotations.
+
+Ultimately, the set of climatic variables that best explains the current distribution of *M. persicae*, according to my model, are:
+
+i\) the minimum temperature of the coldest month (bio6; which has already been shown to be biologically relevant [@odoherty1985])
+
+ii\) the temperature annual range (bio7; which has also already been shown to be biologically relevant [@alford2012])
+
+iii\) the mean temperature of the wettest quarter (bio8)
+
+iv\) the mean temperature of the warmest quarter (bio10)
+
+v\) the precipitation of the driest month (bio14)
+
+vi\) the precipitation seasonality (bio15)
+
+vii\) the precipitation of the wettest quarter (bio16)
+
+viii\) the precipitation of the coldest quarter (bio19).
 
 ```{r}
 #| echo: false
@@ -294,19 +336,34 @@ In order to run linear models to predict the present-day distribution of *M. per
 
 #testing which variables are most important to the model 
 
-#firstly, we can generate a full model including all of the variables. 
+#I first generated a full model using all 19 bioclimatic variables that are included in the WorldClim Database. This full model would hopefully explain the data very well, but would likely to experience a lot of overfitting, due to the large quantity of variables it introduces.
+
+# I calculated the variance inflation factor (VIF) for each model, and removed the variable which demonstrated the most multi-colinearity (and would therefore be contributing to the overfitting problem the most)
+
+# I then compared the Akaike Information Criteria (AIC) for each model. If the AIC had decreased (indicating lesser overfitting, and therefore a better model), I iterated the procedure. If the AIC increased (indicating that I had removed a variable that was highly important for the model to explain the observed data), then I put this variable back into the model, and considered it "safe", for the remainder of my reduction procedure
+
+# I continued this process until I had generated the lowest AIC possible, demonstrating the best fitting model with the least number of variables included.
+
+#this approach is partially limited, as it does not take into account the biological relevance of each variable. Future approaches might wish to rank the biological relevance of each variable, and integrate this into a weighted system, alongside the statistical approach I employed, to generate the best explanatory model. However, this would rely on a great detail more research upon M. persicae, and it's reliance upon bioclimatic variables, than has yet to be published. For example, whilst there is research on the effects of the minimum temperature of the coldest month [@odoherty1985], and the temperature annual range [@alford2012]; little else is available in the published literature.
+
 
 full_model_1 <- glm(pa ~ bio1 + bio2 + bio3 + bio4 + bio5 + bio6 + bio7 + bio8 + bio9 + bio10 + bio11 + bio12 + bio13 + bio14 + bio15 + bio16 + bio17 + bio18 + bio19,
     family = binomial(link = "logit"), data = envtrain1
 )
 
+#testing the multicolinearity 
 vif(full_model_1)
 
 reduced_model_1.0 <- glm(pa ~ bio1 + bio2 + bio3 + bio4 + bio6 + bio7 + bio8 + bio9 + bio10 + bio11 + bio12 + bio13 + bio14 + bio15 + bio16 + bio17 + bio18 + bio19,
     family = binomial(link = "logit"), data = envtrain1
 )
 
+#testing the fit of the new model 
+
 AIC(full_model_1, reduced_model_1.0)
+
+#iterate
+
 vif(reduced_model_1.0)
 
 reduced_model_1.1 <- glm(pa ~ bio1 + bio2 + bio3 + bio4 + bio6 + bio7 + bio8 + bio9 + bio10 + bio12 + bio13 + bio14 + bio15 + bio16 + bio17 + bio18 + bio19,
@@ -379,8 +436,12 @@ reduced_model_1.10 <- glm(pa ~ bio6 + bio7 + bio8 + bio10 + bio14 + bio15 + bio1
 AIC(full_model_1, reduced_model_1.0, reduced_model_1.1, reduced_model_1.2, reduced_model_1.3, reduced_model_1.4, reduced_model_1.5, reduced_model_1.6, reduced_model_1.7, reduced_model_1.8, reduced_model_1.9, reduced_model_1.10)
 vif(reduced_model_1.10)
 
+#further testing showing the area under the curve, true skill statistic and confusion matrix could be used to assess my findings. 
+
 evaluate(testpres, testbackg, full_model_1)
 evaluate(testpres, testbackg, reduced_model_1.10)
+
+#Whilst, according to my VIF calculations, some of my included variables are still correlated, and there are also many variables included in the model (which reflects the complexity of biogeographical data), I believe that this approach demonstrates the best way of finding which climatic variables best explains the current distribution of a species. In order to generalise this to other species, it would be ideal for future researchers to generate a function, for the iteration of this approach, for the WorldClim variables.
 ```
 
 ```{r}
@@ -389,7 +450,7 @@ evaluate(testpres, testbackg, reduced_model_1.10)
 #| message: false
 #| label: predictions
 
-#finally, let's plot our data
+#finally, we plot our data
                   
 pg1 <- predict(bio1.data, reduced_model_1.10, ext = e1, type = "response")
 pg1 <- crop(pg1, e1)
@@ -400,6 +461,8 @@ pg1 <- crop(pg1, e1)
 #| warning: false
 #| message: false
 #| label: thresholds
+
+#evaluate the model and apply a threshold
 
 ge1 <- evaluate(testpres, testbackg, reduced_model_1.10)
 tr1 <- threshold(ge1, "prevalence")
@@ -412,23 +475,28 @@ tr1 <- threshold(ge1, "prevalence")
 #| warning: false
 #| message: false
 #| label: plottingP/Asp1
+#| fig-cap: "Fig2: Presence (yellow)/Absence (purple) model with red datapoints for M. persicae, across the European range." 
 
-plot(pg1 > tr1, main = "presence/absence")
+#in this plot, we disable the automatic legend (which shows TRUE/FALSE), and manually create our own, more legible Present/Absent one 
+
+plot(pg1 > tr1, main = "Presence/Absence Model of M. persicae + Data", legend = FALSE) 
 plot(wrld_simpl, add = TRUE, border = "dark grey")
 points(sp1.coords, col="red", pch=20, cex=1.5)
+legend("topright", legend = c("Present", "Absent"), 
+       fill = c("yellow", "purple"),
+       border = "black", 
+       bty = "n", xpd = TRUE)
 ```
 
-My map of the current M. persicae distribution shows that \[...\].  
-
-As such, the set of climatic variables which best explain the current distribution of M. persicae are \[... see supplementary\]. Perhaps this could be explained by \[cite + bibliography\], though this would require \[...\].  
+According to Fig2, my map of the current *M. persicae* distribution shows that the species is likely to be present in Eastern UK, North-West Scandinavia, Southern Greece and Italy, Northern and Southern France, Northern Germany, Poland, Lithuania, Latvia and Estonia; as well as diffusely around mainland Europe. Notably, *M. persicae* appears to be absent through most of the mainland, though.  
 
 ### **2: Species 2 Distribution Modelling**
 
 #### The task: run linear models to predict the present day distribution of species 2.
 
-Here, my chosen species 2 is: *Prunus persica*, the peach tree.
+Here, my chosen species 2 is: *Prunus persica*, the peach tree. I chose this because *M. persicae* is an aphid pest which feeds upon the peaches [@verdugo2016]; thus, their relative distributions are of interest.
 
-![Prunus persica, the peach tree.](images/Prunus%20persica-01.jpg){fig-alt="An image of prunus persica, the peach tree."}
+![*Prunus persica*, the peach tree.](images/Prunus%20persica-01.jpg){fig-alt="An image of prunus persica, the peach tree."}
 
 ```{r}
 #| echo: false
@@ -492,12 +560,9 @@ colnames(sp2.coords) <- c("lon", "lat")
 #| message: false
 #| label: sp2biodata
 
-##now we turn to the bioclimatic data
-
-bio2.values <- extract(bio.data, sp2.coords)[, -1]  # Looking at the relevant data
+bio2.values <- extract(bio.data, sp2.coords)[, -1]  
 rownames(bio2.values) <- rownames(sp2.coords)
 
-# Append to lat long, remove rows with missing data, and save to file for future use
 sp2.data <- cbind(sp2.coords, bio2.values)
 sp2.data <- na.omit(sp2.data)
 write.csv(sp2.data, file = here("data", "processed", "sp2_data.csv"), row.names = FALSE)
@@ -542,8 +607,6 @@ testpres2 <- data.frame(extract(bio2.data, sp2.coords))
 testbackg2 <- data.frame(extract(bio2.data, bg2)) 
 ```
 
-Once again, in order to run linear models to predict the present-day distribution of P. persica, I had to first understand which climate variables would be be important in predicting its distribution. In order to analyse this \[...\].  
-
 ```{r}
 #| echo: false
 #| warning: false
@@ -552,7 +615,7 @@ Once again, in order to run linear models to predict the present-day distributio
 #| include: false
 #| label: sp2modeltest
 
-#testing which model best fits 
+#testing which model best fits for species 2 according to my pre-outlined protocol
 
 full_model_2 <- glm(pa ~ bio1 + bio2 + bio3 + bio4 + bio5 + bio6 + bio7 + bio8 + bio9 + bio10 + bio11 + bio12 + bio13 + bio14 + bio15 + bio16 + bio17 + bio18 + bio19,
                     family = binomial(link = "logit"), data = envtrain2
@@ -626,15 +689,39 @@ vif(reduced_model_2.8)
 
 evaluate(testpres, testbackg, full_model_2)
 evaluate(testpres, testbackg, reduced_model_2.8)
+
+#After conducting reduced modelling approaches for both species, the only bioclimatic variables that appear to best explain the distributions of both M. persicae and P. persica are the temperature annual range (bio7; [@alford2012]), the mean temperature of the wettest quarter (bio8) the mean temperature of the warmest quarter (bio10), and the precipitation seasonality (bio15). Notably, all other bioclimatic variables are then found in either of the two reduced models of the distributions of my two chosen species. This has implications for the future distirbutions of each species. I will return to this point in the future predictions part of my write-up.
 ```
+
+Here, I found that the bioclimatic variables that best explains the current distribution of P. persica, according to my model, are:
+
+i\) annual mean temperature (bio1)
+
+ii\) isothermality (bio3; which has already been established as biologically relevant: [@bielenberg2022])
+
+iii\) the temperature annual range (bio7)
+
+iv\) the mean temperature of the wettest quarter (bio8)
+
+v\) the mean temperature of the driest quarter (bio9)
+
+vi\) the mean temperature of the warmest quarter (bio10)
+
+vii\) the mean temperature of the coldest quarter (bio11; which has already been established as biologically relevant: [@bioscience2021])
+
+viii\) the annual precipitation (bio12; which has already been established as biologically relevant: [@ighbareyeh2019])
+
+ix\) the precipitation of the wettest month (bio13)
+
+x\) the precipitation seasonality (bio15)
+
+xi\) the precipitation of the driest quarter (bio17).
 
 ```{r}
 #| echo: false
 #| warning: false
 #| message: false
 #| label: sp2predict
-
-#finally, let's plot our data
                   
 pg2 <- predict(bio2.data, reduced_model_2.8, ext = e2, type = "response")
 pg2 <- crop(pg2, e2)
@@ -655,23 +742,26 @@ tr2 <- threshold(ge2, "prevalence")
 #| warning: false
 #| message: false
 #| label: sp2plot
+#| fig-cap: "Fig3: Presence (yellow)/Absence (purple) model with red datapoints for P. persica, across the European range."
 
-plot(pg2 > tr2, main = "presence/absence")
+plot(pg2 > tr2, main = "Presence/Absence Model of P. persica + Data", legend = FALSE)
 plot(wrld_simpl, add = TRUE, border = "dark grey")
 points(sp2.coords, col="red", pch=20, cex=1.5)
+legend("topright", legend = c("Present", "Absent"), 
+       fill = c("yellow", "purple"), 
+       border = "black", 
+       bty = "n", xpd = TRUE)
 ```
 
-My map of the current M. persicae distribution shows that \[...\].  
-
-As such, the set of climatic variables which best explain the current distribution of M. persicae are \[... see supplementary\]. Perhaps this could be explained by \[cite + bibliography\], though this would require \[...\].  
+According to Fig3, my map of *P. persica* distribution shows that it is likely to be present throughout much of the UK, Eastern Spain, France, Germany, Western Poland, Italy and Scandinavia. This map indicates a potential overlap with *M. persicae*, corroborating our biological hypothesis based on the pre-existing literature [@verdugo2016]. This therefore warrants further investigation.  
 
 ### **3: Distribution Overlap**
 
 #### The task: plot the overlap in distribution of the two species. Devise and calculate a metric for the degree of overlap between their ranges, explaining how you calculated it.
 
-#### [*Plot the overlap in distribution of the two species.*]{.underline}
+#### [*Plot the overlap in distribution of the two species...*]{.underline}
 
-In order to plot the overlap in distribution between M. persicae and P. persica, I first needed to \[...\]. 
+In order to plot the overlap in distribution between *M. persicae* and *P. persica*, I [first]{.underline} needed to introduce a buffer distance of 80km; the reputed dispersal capacity of an aphid [@ahdb2024]. However, this is a generalisation, and this analysis would be improved by a supplementary study which discovered the dispersal capacity of *M. persicae* itself.
 
 ```{r}
 #| echo: false
@@ -679,26 +769,38 @@ In order to plot the overlap in distribution between M. persicae and P. persica,
 #| message: false
 #| label: definingoverlap
 
+#setting the buffer distance to a biologically accurate 80km (please see my write-up for the appropriate citation)
+
 buffer_distance <- 80000
+
+#creating buffers for both species 
 exp_sp1 <- buffer(pg1 > tr1, width = buffer_distance)
 exp_sp2 <- buffer(pg2 > tr2, width = buffer_distance)
 
+
+#extracting the buffered extent values for both species 
 extent_sp1 <- ext(exp_sp1)
 extent_sp2 <- ext(exp_sp2)
 
+
+#combining the extents of the expected distributions of both species 
 combined_extent <- ext(min(xmin(extent_sp1), xmin(extent_sp2)),
                        max(xmax(extent_sp1), xmax(extent_sp2)),
                        min(ymin(extent_sp1), ymin(extent_sp2)),
                        max(ymax(extent_sp1), ymax(extent_sp2)))
+
+#extending the expected distribution for the new combined extents for both species 
                        
 exp_sp1_extended <- extend(exp_sp1, combined_extent)
 exp_sp2_extended <- extend(exp_sp2, combined_extent)
+
+#resampling to match the extents 
 
 exp_sp2_resampled <- resample(exp_sp2_extended, exp_sp1_extended, method = "bilinear")
 ```
 
 ::: callout-tip
-## An individual M. persicae can disperse up to 80km!
+## An individual aphid can disperse up to 80km!
 :::
 
 #### [*Devise and calculate a metric for the degree of overlap between their ranges, explaining how you calculated it.*]{.underline}
@@ -709,39 +811,46 @@ exp_sp2_resampled <- resample(exp_sp2_extended, exp_sp1_extended, method = "bili
 #| message: false
 #| label: metriccalc
 
+#method for calculating the overlap area is explained in full in the text
+
 overlap_area <- exp_sp1_extended * exp_sp2_resampled
 overlap_area_sum <- sum(values(overlap_area), na.rm = TRUE)
 ```
 
-In order to devise and calculate a metric for the degree of overlap between the ranges of M. persicae and P. persica, I decided to \[...\].  
+In order to devise and calculate a metric for the degree of overlap between the ranges of *M. persicae* and *P. persica*, I decided to generate overlap area alongside a buffer, to allow for *M. persicae* mobility. To calculate this, I used the buffered expected distribution of species 1, multiplying this by my resampled expected distribution of species 2 (so that the extents matched), to generate a new raster layer. Summing the overlap within this raster layer shows the overlapping distributions of *M. persicae* and *P. persica*.
 
 ```{r}
 #| echo: false
 #| warning: false
 #| message: false
 #| label: plottingoverlap
+#| fig-cap: "Fig4: Overlap area (beige) between M. persicae (raw = green), and P. persica (raw = pink), across their European ranges. Associated with a 22882 raster cell overlap."
 
-plot(overlap_area, main = "Overlap Area", col = c("transparent", "green"), legend = FALSE)
+#plotting the overlap area, alongside raw datapoints for both species 
+
+plot(overlap_area, main = "Overlap Area of M. persicae and P. persica Distributions", col = c("transparent", "beige"), legend = FALSE) #beige is the mixture of green and pink
 plot(wrld_simpl, add = TRUE, border = "dark grey")
-points(sp1.coords, col = "red", pch = 20, cex = 1.5)  # Points for Species 1
-points(sp2.coords, col = "blue", pch = 20, cex = 1.5)  # Points for Species 2
+points(sp1.coords, col = "green", pch = 20, cex = 1.5)  # M. persicae data; green for clarity
+points(sp2.coords, col = "pink", pch = 20, cex = 1.5)  # P. prunus data; pink for clairty
+
+#pasting the raster metric of overlap
 
 print(paste("Total overlap area (sum of raster cells):", overlap_area_sum))
 ```
 
-Ultimately, my map of the overlapping distributions of M. persicae and P. persica shows that \[...\].  
+According to Fig4, my map of the distributions of *M. persicae* and *P. persica* shows a 22882 raster cells overlap. Visually, the overlap extends to almost all of the presence datapoints for both species (excluding 2 *P. persica* points in the East), and extends also to where the points are not plotted, as a result of the buffer.
 
 ### **4: Interspecies Distribution Dependence**
 
 #### The task: use a linear model to test whether the distribution of species 1 at the present time depends on the distribution of species 2, while also taking account of the effects of climatic variables.
-
-In order to generate a linear model that could test whether the distribution of M. persicae at the present time depends on the distribution of P. persica, I first had to \[...\].
 
 ```{r}
 #| echo: false
 #| warning: false
 #| message: false
 #| label: generatingdualmodel
+
+#most of this code should be understandable from prior annotations, so I leave it blank here for ease of digestion
 
 pg1_values <- values(pg1)
 pg2_values <- values(pg2)
@@ -752,11 +861,13 @@ pg2_resampled <- resample(pg2_extended, pg1, method = "bilinear")
 pg1_values <- values(pg1)
 pg2_values <- values(pg2_resampled)
 
-# Combine them into a data frame
+#combining pg1 and pg2 into a data frame, so we can test their association 
 present_overlap_model_data <- data.frame(pg1 = pg1_values, pg2 = pg2_values)
-present_overlap_model_data <- na.omit(present_overlap_model_data)
+present_overlap_model_data <- na.omit(present_overlap_model_data) #getting rid of any NAs
 
-present_overlap_model <- lm(pg2_values ~ pg1_values, data = present_overlap_model_data)
+#assigning the linear model
+
+present_overlap_model <- lm(pg1_values ~ pg2_values, data = present_overlap_model_data)
 ```
 
 ```{r}
@@ -765,10 +876,16 @@ present_overlap_model <- lm(pg2_values ~ pg1_values, data = present_overlap_mode
 #| message: false
 #| label: summarising dual model
 
+#summarising the model, looking at pg2_values and adjusted R-squared 
+
 summary(present_overlap_model)
 ```
 
-Ultimately, this summary of my model shows that \[...\].
+To generate this analysis I used the same approach to linear modelling as previously, making sure the extents of each species matched, and there was no missing data, so that I could model the overlap. Specifically, I modelled how the distribution of *M. persicae* was associated with the distribution of *P. persica.*
+
+The summary of my model shows that there a high degree of statistical significance between pg2 (a proxy for the species distribution of *P. persica*) and pg1 (a proxy for the species distribution of *M. persicae*), to the degree of \<2e-16. Hence, there is a strong association between the distribution of *M. persicae* to *P. persica*.
+
+Moreover, approximately 41.5% of pg2 variation is explained by pg1, according to our Adjusted R-Squared. Whilst this is not low, I would not define a 41.5% level of explanation as a "dependence" of *M. persicae* distribution on *P. persica* distribution without further testing, such as spatial autocorrelation [@hinch1994].
 
 ### **5: Future Distribution Prediction**
 
@@ -776,17 +893,16 @@ Ultimately, this summary of my model shows that \[...\].
 
 #### [*Predict the future distribution of each species using CMIP6 data for future climate:*]{.underline}
 
-In order to predict the future distribution of each species using the CMIp6 data for future climate, I first had to \[...\].
-
 ```{r}
 #| echo: false
 #| warning: false
 #| message: false
 #| label: settingupfuture
 
-# Crop future climate data to region of interest for efficiency
+# first, we need to crop our future climate data to our extent 
 future.bio1.data <- crop(future.bio.data, e1)
 
+#next, let's introduce the reduced model from earlier 
 pg1.future <- predict(future.bio1.data, reduced_model_1.10, ext = e1, type = "response")
 pg1.future <- crop(pg1.future, e1)
 ```
@@ -796,20 +912,19 @@ pg1.future <- crop(pg1.future, e1)
 #| warning: false
 #| message: false
 #| label: sp1PvF
+#| fig-cap: "Fig5: Continuous Presence (yellow)/Absence (purple) model with black cross datapoints for M. persicae, across the European range; LHS present; RHS 2060-2081."
 
-# Plot results side by side
+# plot the present and future distributions adjacent to one another 
 par(mfrow = c(1, 2))
-
-# Present distribution
-plot(pg1, main = "A) GLM present")
+plot(pg1, main = "A) Present")
 plot(wrld_simpl, add = TRUE, border = "dark grey")
 points(sp1.coords, col = "black", pch = 4, cex = 0.5)
-
-# Future distribution
-plot(pg1.future, main = "B) GLM, 2060-2081")
+plot(pg1.future, main = "B) 2060-2081")
 plot(wrld_simpl, add = TRUE, border = "dark grey")
 points(sp1.coords, col = "black", pch = 4, cex = 0.5)
 ```
+
+According to Fig5, for *M. persicae*, predicting the future distribution shows a greater presence in Northeastern Norway; but a reduced presence in Southeastern Finland, Southwestern Greece, and Orkney.
 
 ```{r}
 #| echo: false
@@ -817,15 +932,15 @@ points(sp1.coords, col = "black", pch = 4, cex = 0.5)
 #| message: false
 #| label: sp1localities
 
-# First, get predictions for present and future at all localities
+# first, we need to get predictions for present and future across all localities
 predict.localities1.now <- extract(pg1 >= tr1, sp1.coords)[, -1]
 predict.localities1.future <- extract(pg1.future >= tr1, sp1.coords)[, -1]
 
-# We can extract some numbers about how the range will change, for example:
+# next, we can extract some interesting outputs:
 present_range_1 <- sum(predict.localities1.now)
-future_range_1 <- sum(predict.localities1.future, na.rm = TRUE)
-range_expansion_1 <- sum((predict.localities1.now == 0) & (predict.localities1.future == 1), na.rm = TRUE)
-range_contraction_1 <- sum((predict.localities1.now == 1) & (predict.localities1.future == 0), na.rm = TRUE)
+future_range_1 <- sum(predict.localities1.future, na.rm = TRUE) #making sure to remove NAs
+range_expansion_1 <- sum((predict.localities1.now == 0) & (predict.localities1.future == 1), na.rm = TRUE) #making sure to remove NAs
+range_contraction_1 <- sum((predict.localities1.now == 1) & (predict.localities1.future == 0), na.rm = TRUE) #making sure to remove NAs
 ```
 
 ```{r}
@@ -834,7 +949,7 @@ range_contraction_1 <- sum((predict.localities1.now == 1) & (predict.localities1
 #| message: false
 #| label: printingsp1localities
 
-# Print results in a clear format
+# printing these results, for visibility 
 print("Range change metrics:")
 print(paste("Current suitable localities:", present_range_1))
 print(paste("Future suitable localities:", future_range_1))
@@ -842,13 +957,15 @@ print(paste("Number of new suitable localities (expansion):", range_expansion_1)
 print(paste("Number of lost suitable localities (contraction):", range_contraction_1))
 ```
 
+To quantify this, it appears there will be a small number of future suitable localities, none of which are new, but some will have been lost since the present. The exact values change upon iterating the model.
+
 ```{r}
 #| echo: false
 #| warning: false
 #| message: false
 #| label: sp2future
 
-#for sp2
+#repeating the same protocol for species 2
 
 future.bio2.data <- crop(future.bio.data, e2)
 
@@ -861,20 +978,19 @@ pg2.future <- crop(pg2.future, e2)
 #| warning: false
 #| message: false
 #| label: plottingsp2PvF
+#| fig-cap: "Fig6: Continuous Presence (yellow)/Absence (purple) model with black cross datapoints for P. persica, across the European range; LHS present; RHS 2060-2081."
 
-# Plot results side by side
+
 par(mfrow = c(1, 2))
-
-# Present distribution
-plot(pg2, main = "A) GLM present")
+plot(pg2, main = "A) Present")
 plot(wrld_simpl, add = TRUE, border = "dark grey")
 points(sp2.coords, col = "black", pch = 4, cex = 0.5)
-
-# Future distribution
-plot(pg2.future, main = "B) GLM, 2060-2081")
+plot(pg2.future, main = "B) 2060-2081")
 plot(wrld_simpl, add = TRUE, border = "dark grey")
 points(sp2.coords, col = "black", pch = 4, cex = 0.5)
 ```
+
+According to Fig6, with regards to *P. persica*, the predicted future distribution changes, as high presence is predicted across the most of the UK, Scandinavia and mainland Europe.
 
 ```{r}
 #| echo: false
@@ -882,11 +998,9 @@ points(sp2.coords, col = "black", pch = 4, cex = 0.5)
 #| message: false
 #| label: sp2localities
 
-# First, get predictions for present and future at all localities
 predict.localities2.now <- extract(pg2 >= tr2, sp2.coords)[, -1]
 predict.localities2.future <- extract(pg2.future >= tr1, sp2.coords)[, -1]
 
-# We can extract some numbers about how the range will change, for example:
 present_range_2 <- sum(predict.localities2.now)
 future_range_2 <- sum(predict.localities2.future, na.rm = TRUE)
 range_expansion_2 <- sum((predict.localities2.now == 0) & (predict.localities2.future == 1), na.rm = TRUE)
@@ -900,7 +1014,6 @@ range_contraction_2 <- sum((predict.localities2.now == 1) & (predict.localities2
 #| message: false
 #| label: printsp2localities
 
-# Print results in a clear format
 print("Range change metrics:")
 print(paste("Current suitable localities:", present_range_2))
 print(paste("Future suitable localities:", future_range_2))
@@ -908,15 +1021,17 @@ print(paste("Number of new suitable localities (expansion):", range_expansion_2)
 print(paste("Number of lost suitable localities (contraction):", range_contraction_2))
 ```
 
-#### [*Predict how the degree of overlap in ranges change:*]{.underline}
+This shows 166 future suitable localities; none of these having been lost by contraction from the present. However, none of them have been gained as new by expansion either; which is indicative of the presence simply fortifying in a distribution which *P. persica* currently occupies.
 
-In order to predict how the degree of overlap in the ranges of M. persicae and P. persica would change in this time, I had to \[...\].
+#### [*Predict how the degree of overlap in ranges change:*]{.underline}
 
 ```{r}
 #| echo: false
 #| warning: false
 #| message: false
 #| label: futureoverlap
+
+#we use the same method as earlier to calculate overlap, but here we are using the future data
 
 future_exp_sp1 <- buffer(pg1.future > tr1, width = buffer_distance)
 future_exp_sp2 <- buffer(pg2.future > tr2, width = buffer_distance)
@@ -939,101 +1054,278 @@ future_overlap_area <- future_exp_sp1_extended * future_exp_sp2_resampled
 future_overlap_area_sum <- sum(values(future_overlap_area), na.rm = TRUE)
 ```
 
-#### [*Do you expect the two species to co-occur more often or less often than at the present?*]{.underline}
-
 ```{r}
 #| echo: false
 #| warning: false
 #| message: false
 #| label: printingfutureoverlap
 
+#getting the new raster metric for the overlap of the future data 
+
 print(paste("Total overlap area (sum of raster cells):", future_overlap_area_sum))
 ```
 
-Ultimately, my calculation for the overlapping area sum in the future shows that \[...\].
+[*Do you expect the two species to co-occur more often or less often than at the present?*]{.underline}
 
-## SUPPLEMENTARY.
+The total overlap area was 23031 raster cells; an increase from the present day of 22882, but by a percentage increase of just 0.65%. As such, I expect the two species to occur more often under future bioclimates than at present, very slightly.
+
+## Conclusions:
+
+It appears that the distributions of *M. persicae* and *P. persica* are deeply entrenched within bioclimatic variables. Both dependent on variables that are both temperature- and precipitation- related, as well as independently associated with all other variables, we might predict that these species' distributions will react in a complex manner to the uncertain and unfolding future bioclimatic variables (that are illustrated in the SUPPLEMENTARY MATERIALS). Even without taking into account their ability as biological entities to adapt and evolve, it is extremely hard to predict how such a highly integrated system will change across a generation. However, these modelling efforts are important - and have implications for stakeholders such as researchers, and also farmers who are economically dependent upon peach cultivation, and their resistance to aphid pests.
+
+## SUPPLEMENTARY MATERIALS:
 
 ```{r}
 #| echo: false
 #| warning: false
 #| message: false
-#| label: changedataofinterest
+#| label: 7change
+#| fig-cap: "Fig7a: temperature annual range changes, predicted to affect both M. persicae and P. persicus"
 
-# SUPPLEMENTARY
-# plot present, future and change in climate for bioclim 1 variable, mean annual temperature.
+#plotting adjacent to one another the present day, future prediction and the change (by subtracting the latter from the former)
+
 par(mfrow = c(1, 3))
 plot(bio.data[[7]], ext = e1, main = "Present Day")
 plot(future.bio.data[[7]], ext = e1, main = "2061-2080")
 plot(change.bio.data[[7]], ext = e1, main = "Projected Change") 
+```
+
+According to Fig7a, temperature is predicted to change within the overlapping species distributions. Perhaps this will affect the species distributions, and their dependence. It has already been shown to be biologically relevant to *M. persicae* [@alford2012].
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+#| label: 8change
+#| fig-cap: "Fig7b: mean temperature of the wettest quarter changes, predicted to affect both M. persicae and P. persicus"
+
+#repeat for variable 8
+
+par(mfrow = c(1, 3))
+plot(bio.data[[8]], ext = e1, main = "Present Day")
+plot(future.bio.data[[8]], ext = e1, main = "2061-2080")
+plot(change.bio.data[[8]], ext = e1, main = "Projected Change") 
+```
+
+According to Fig7b, mean temperature of the wettest quarter is predicted to change within the overlapping species distributions. Perhaps this will affect the species distributions, and their dependence.
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+#| label: 10change
+#| fig-cap: "Fig7c: mean temperature of the warmest quarter changes, predicted to affect both M. persicae and P. persica"
+
+#repeat for variable 10
 
 par(mfrow = c(1, 3))
 plot(bio.data[[10]], ext = e1, main = "Present Day")
 plot(future.bio.data[[10]], ext = e1, main = "2061-2080")
 plot(change.bio.data[[10]], ext = e1, main = "Projected Change") 
+```
 
-par(mfrow = c(1, 3))
-plot(bio.data[[6]], ext = e1, main = "Present Day")
-plot(future.bio.data[[6]], ext = e1, main = "2061-2080")
-plot(change.bio.data[[6]], ext = e1, main = "Projected Change") 
+According to Fig7c, mean temperature of the warmest quarter is predicted to increase within the overlapping species distributions. Perhaps this will affect the species distributions, and their dependence.
 
-par(mfrow = c(1, 3))
-plot(bio.data[[14]], ext = e1, main = "Present Day")
-plot(future.bio.data[[14]], ext = e1, main = "2061-2080")
-plot(change.bio.data[[14]], ext = e1, main = "Projected Change") 
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+#| label: 15change
+#| fig-cap: "Fig7d: precipitation seasonality changes, predicted to affect both M. persicae and P. persica"
+
+#repeat for variable 15
 
 par(mfrow = c(1, 3))
 plot(bio.data[[15]], ext = e1, main = "Present Day")
 plot(future.bio.data[[15]], ext = e1, main = "2061-2080")
 plot(change.bio.data[[15]], ext = e1, main = "Projected Change") 
+```
+
+According to Fig7d, precipitation seasonality is predicted to change within the overlapping species distributions. Perhaps this will affect the species distributions, and their dependence.
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+#| label: 6change
+#| fig-cap: "Fig7e: min temperature of the coldest month changes, predicted to affect M. persicae"
+
+#repeat for variable 6
+
+par(mfrow = c(1, 3))
+plot(bio.data[[6]], ext = e1, main = "Present Day")
+plot(future.bio.data[[6]], ext = e1, main = "2061-2080")
+plot(change.bio.data[[6]], ext = e1, main = "Projected Change") 
+```
+
+According to Fig7e, min temperature of the coldest month is predicted to increase within the *M. persicae* distribution. Perhaps this will affect its distribution.
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+#| label: 14change
+#| fig-cap: "Fig7f: precipitation of driest month changes, predicted to affect M. persicae"
+
+#repeat for variable 14
+
+par(mfrow = c(1, 3))
+plot(bio.data[[14]], ext = e1, main = "Present Day")
+plot(future.bio.data[[14]], ext = e1, main = "2061-2080")
+plot(change.bio.data[[14]], ext = e1, main = "Projected Change") 
+```
+
+According to Fig7f, precipitation of the driest month is predicted to change within the *M. persicae* distribution. Perhaps this will affect its distribution.
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+#| label: 16change
+#| fig-cap: "Fig7g: precipitation of the wettest quarter changes, predicted to affect M. persicae"
+
+#repeat for variable 16
 
 par(mfrow = c(1, 3))
 plot(bio.data[[16]], ext = e1, main = "Present Day")
 plot(future.bio.data[[16]], ext = e1, main = "2061-2080")
 plot(change.bio.data[[16]], ext = e1, main = "Projected Change") 
+```
+
+According to Fig7g, precipitation of the wettest quarter is predicted to change within the *M. persicae* distribution. Perhaps this will affect its distribution.
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+#| label: 19change
+#| fig-cap: "Fig7h: precipitation of the coldest quarter changes, predicted to affect M. persicae"
+
+#repeat for variable 19
 
 par(mfrow = c(1, 3))
 plot(bio.data[[19]], ext = e1, main = "Present Day")
 plot(future.bio.data[[19]], ext = e1, main = "2061-2080")
 plot(change.bio.data[[19]], ext = e1, main = "Projected Change") 
+```
 
-par(mfrow = c(1, 3))
-plot(bio.data[[19]], ext = e1, main = "Present Day")
-plot(future.bio.data[[19]], ext = e1, main = "2061-2080")
-plot(change.bio.data[[19]], ext = e1, main = "Projected Change") 
+According to Fig7h, precipitation of the coldest quarter is predicted to change within the *M. persicae* distribution. Perhaps this will affect its distribution.
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+#| label: 1change
+#| fig-cap: "Fig7i: annual mean temperature changes, predicted to affect P. persica" 
+
+#repeat for variable 1
 
 par(mfrow = c(1, 3))
 plot(bio.data[[1]], ext = e1, main = "Present Day")
 plot(future.bio.data[[1]], ext = e1, main = "2061-2080")
 plot(change.bio.data[[1]], ext = e1, main = "Projected Change") 
+```
+
+According to Fig7i, annual mean temperature is predicted to increase within the *P. persica* distribution. Perhaps this will affect its distribution, and consequently the distribution of *M. persicae* (which is associated with it).
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+#| label: 3change
+#| fig-cap: "Fig7j: isothermality changes, predicted to affect P. persica"
+
+#repeat for variable 3
 
 par(mfrow = c(1, 3))
 plot(bio.data[[3]], ext = e1, main = "Present Day")
 plot(future.bio.data[[3]], ext = e1, main = "2061-2080")
 plot(change.bio.data[[3]], ext = e1, main = "Projected Change") 
+```
+
+According to Fig7j, isothermality is predicted to change within the *P. persica* distribution. Perhaps this will affect its distribution, and consequently the distribution of *M. persicae* (which is associated with it). It has already shown to be biologically relevant to *P. persica* [@bielenberg2022].
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+#| label: 9change
+#| fig-cap: "Fig7k: mean temperature of the driest quarter changes, predicted to affect P. persica"
+
+#repeat for variable 9
 
 par(mfrow = c(1, 3))
 plot(bio.data[[9]], ext = e1, main = "Present Day")
 plot(future.bio.data[[9]], ext = e1, main = "2061-2080")
 plot(change.bio.data[[9]], ext = e1, main = "Projected Change") 
+```
+
+According to Fig7k, mean temperature of the driest quarter is predicted to change within the *P. persica* distribution. Perhaps this will affect its distribution, and consequently the distribution of *M. persicae* (which is associated with it).
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+#| label: 11change
+#| fig-cap: "Fig7l: mean temperature of the coldest quarter changes, predicted to affect P. persica"
+
+#repeat for variable 11
 
 par(mfrow = c(1, 3))
 plot(bio.data[[11]], ext = e1, main = "Present Day")
 plot(future.bio.data[[11]], ext = e1, main = "2061-2080")
 plot(change.bio.data[[11]], ext = e1, main = "Projected Change") 
+```
+
+According to Fig7l, mean temperature of the coldest quarter is predicted to increase within the *P. persica* distribution. Perhaps this will affect its distribution, and consequently the distribution of *M. persicae* (which is associated with it). It has already been shown to be biologically relevant to *P. persica* [@bioscience2021].
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+#| label: 12change
+#| fig-cap: "Fig7m: annual precipitation changes, predicted to affect P. persica" 
+
+#repeat for variable 12
 
 par(mfrow = c(1, 3))
 plot(bio.data[[12]], ext = e1, main = "Present Day")
 plot(future.bio.data[[12]], ext = e1, main = "2061-2080")
 plot(change.bio.data[[12]], ext = e1, main = "Projected Change") 
+```
+
+According to Fig7m, annual precipitation is predicted to change within the *P. persica* distribution. Perhaps this will affect its distribution, and consequently the distribution of *M. persicae* (which is associated with it). It has already been shown to be biologically relevant to *P. persica* [@ighbareyeh2019].
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+#| label: 13change
+#| fig-cap: "Fig7n: precipitation of the wettest month changes, predicted to affect P. persica" 
+#repeat for variable 13
 
 par(mfrow = c(1, 3))
 plot(bio.data[[13]], ext = e1, main = "Present Day")
 plot(future.bio.data[[13]], ext = e1, main = "2061-2080")
 plot(change.bio.data[[13]], ext = e1, main = "Projected Change") 
 
+```
+
+According to Fig7n, precipitation of the wettest month is predicted to change within the *P. persica* distribution. Perhaps this will affect its distribution, and consequently the distribution of *M. persicae* (which is associated with it).
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+#| label: 17change
+#| fig-cap: "Fig7o: precipitation of driest quarter changes, predicted to affect P. persica" 
+
+#repeat for variable 17
+
 par(mfrow = c(1, 3))
 plot(bio.data[[17]], ext = e1, main = "Present Day")
 plot(future.bio.data[[17]], ext = e1, main = "2061-2080")
 plot(change.bio.data[[17]], ext = e1, main = "Projected Change") 
 ```
+
+According to Fig7o, precipitation of the driest quarter is predicted to change within the *P. persica* distribution. Perhaps this will affect its distribution, and consequently the distribution of *M. persicae* (which is associated with it).
